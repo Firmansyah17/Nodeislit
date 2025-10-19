@@ -1,24 +1,32 @@
 name: SSH Ubuntu Runner (Tailscale + Node.js)
 
 on:
-  workflow_dispatch: {}   # jalankan manual dari tab Actions
+  workflow_dispatch:
+    inputs:
+      keep_minutes:
+        description: "Berapa menit runner tetap hidup"
+        required: false
+        default: "180"
 
 jobs:
   ssh-linux:
     runs-on: ubuntu-latest
+
     steps:
+      # 1) Buat user 'dev' + password acak (aman, tanpa broken pipe)
       - name: Create user 'dev' with random password
         shell: bash
         run: |
           set -e
-          PASS=$(tr -dc 'A-Za-z0-9!@#$%^&*()-_=+' </dev/urandom | head -c 20)
+          PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9!@#$%^&*()-_=+' | head -c 20)
           sudo useradd -m -s /bin/bash dev || true
           echo "dev:${PASS}" | sudo chpasswd
           sudo usermod -aG sudo dev
           echo "SSH_USER=dev" >> $GITHUB_ENV
           echo "SSH_PASS=${PASS}" >> $GITHUB_ENV
 
-      - name: Install OpenSSH Server
+      # 2) OpenSSH server
+      - name: Install & start OpenSSH Server
         shell: bash
         run: |
           set -e
@@ -27,6 +35,7 @@ jobs:
           sudo systemctl enable ssh
           sudo systemctl restart ssh
 
+      # 3) Tailscale
       - name: Install Tailscale & connect
         shell: bash
         run: |
@@ -34,8 +43,10 @@ jobs:
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
                             --hostname=ssh-linux-${{ github.run_id }}
-          echo "TS_IP=$(tailscale ip | head -n1)" >> $GITHUB_ENV
+          TS_IPv4=$(tailscale ip -4 | head -n1)
+          echo "TS_IP=${TS_IPv4}" >> $GITHUB_ENV
 
+      # 4) Node.js LTS + pm2
       - name: Install Node.js LTS + pm2
         shell: bash
         run: |
@@ -45,18 +56,7 @@ jobs:
           sudo npm i -g pm2
           node -v && npm -v && pm2 -v
 
-      - name: Show connection info
-        shell: bash
-        run: |
-          echo "===== SSH CREDENTIALS ====="
-          echo "Tailscale IP : $TS_IP"
-          echo "User         : $SSH_USER"
-          echo "Pass         : $SSH_PASS"
-          echo ""
-          echo "Dari WSL/terminal kamu:"
-          echo "ssh ${SSH_USER}@${TS_IP}"
-
-      # (opsional) contoh app Node.js sederhana biar langsung bisa dites
+      # 5) (Opsional) contoh app Node agar bisa langsung dites
       - name: Create sample Node app and run with pm2
         shell: bash
         run: |
@@ -73,7 +73,27 @@ jobs:
           sudo -u dev pm2 start /home/dev/server.js --name demo
           sudo -u dev pm2 save
 
-      - name: Keep session alive (~3 hours)
+      # 6) Tampilkan info koneksi
+      - name: Show SSH / HTTP info
         shell: bash
         run: |
-          for i in $(seq 1 1080); do sleep 10; done
+          echo "===== SSH CREDENTIALS ====="
+          echo "Tailscale IP : $TS_IP"
+          echo "User         : $SSH_USER"
+          echo "Pass         : $SSH_PASS"
+          echo ""
+          echo "Dari WSL/terminal:"
+          echo "ssh ${SSH_USER}@${TS_IP}"
+          echo ""
+          echo "Tes HTTP sample app:"
+          echo "curl http://${TS_IP}:3000"
+
+      # 7) Keep alive
+      - name: Keep session alive
+        shell: bash
+        run: |
+          MINS="${{ github.event.inputs.keep_minutes }}"
+          [[ -z "$MINS" ]] && MINS=180
+          SECS=$((MINS*60))
+          echo "Keeping runner alive for ${MINS} minutes..."
+          sleep "${SECS}"
