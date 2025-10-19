@@ -1,0 +1,79 @@
+name: SSH Ubuntu Runner (Tailscale + Node.js)
+
+on:
+  workflow_dispatch: {}   # jalankan manual dari tab Actions
+
+jobs:
+  ssh-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create user 'dev' with random password
+        shell: bash
+        run: |
+          set -e
+          PASS=$(tr -dc 'A-Za-z0-9!@#$%^&*()-_=+' </dev/urandom | head -c 20)
+          sudo useradd -m -s /bin/bash dev || true
+          echo "dev:${PASS}" | sudo chpasswd
+          sudo usermod -aG sudo dev
+          echo "SSH_USER=dev" >> $GITHUB_ENV
+          echo "SSH_PASS=${PASS}" >> $GITHUB_ENV
+
+      - name: Install OpenSSH Server
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo systemctl enable ssh
+          sudo systemctl restart ssh
+
+      - name: Install Tailscale & connect
+        shell: bash
+        run: |
+          set -e
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+                            --hostname=ssh-linux-${{ github.run_id }}
+          echo "TS_IP=$(tailscale ip | head -n1)" >> $GITHUB_ENV
+
+      - name: Install Node.js LTS + pm2
+        shell: bash
+        run: |
+          set -e
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          sudo npm i -g pm2
+          node -v && npm -v && pm2 -v
+
+      - name: Show connection info
+        shell: bash
+        run: |
+          echo "===== SSH CREDENTIALS ====="
+          echo "Tailscale IP : $TS_IP"
+          echo "User         : $SSH_USER"
+          echo "Pass         : $SSH_PASS"
+          echo ""
+          echo "Dari WSL/terminal kamu:"
+          echo "ssh ${SSH_USER}@${TS_IP}"
+
+      # (opsional) contoh app Node.js sederhana biar langsung bisa dites
+      - name: Create sample Node app and run with pm2
+        shell: bash
+        run: |
+          cat > /home/dev/server.js <<'JS'
+          const http = require('http');
+          const port = process.env.PORT || 3000;
+          const server = http.createServer((req,res)=>{
+            res.writeHead(200, {'Content-Type':'text/plain'});
+            res.end('Hello from Tailscale Ubuntu runner!\n');
+          });
+          server.listen(port, ()=> console.log('listening on', port));
+          JS
+          sudo chown -R dev:dev /home/dev
+          sudo -u dev pm2 start /home/dev/server.js --name demo
+          sudo -u dev pm2 save
+
+      - name: Keep session alive (~3 hours)
+        shell: bash
+        run: |
+          for i in $(seq 1 1080); do sleep 10; done
