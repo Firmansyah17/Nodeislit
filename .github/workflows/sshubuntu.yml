@@ -1,10 +1,10 @@
-name: SSH Ubuntu Runner (Tailscale + Node.js)
+name: SSH Ubuntu Runner (Tailscale + Node.js, pm2 as dev)
 
 on:
   workflow_dispatch:
     inputs:
       keep_minutes:
-        description: "Berapa menit runner tetap hidup"
+        description: "Durasi runner tetap hidup (menit)"
         required: false
         default: "180"
 
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Buat user 'dev' + password acak
+      # 1) User dev + password acak (tanpa broken pipe)
       - name: Create user 'dev' with random password
         shell: bash
         run: |
@@ -35,7 +35,7 @@ jobs:
           sudo systemctl enable ssh
           sudo systemctl restart ssh
 
-      # 3) Tailscale join
+      # 3) Tailscale
       - name: Install Tailscale & connect
         shell: bash
         run: |
@@ -46,38 +46,34 @@ jobs:
           TS_IPv4=$(tailscale ip -4 | head -n1)
           echo "TS_IP=${TS_IPv4}" >> $GITHUB_ENV
 
-      # 4) Node.js LTS + pm2 (global)
-      - name: Install Node.js LTS + pm2
+      # 4) Node.js LTS
+      - name: Install Node.js LTS
         shell: bash
         run: |
           set -e
           curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
           sudo apt-get install -y nodejs
-          sudo npm i -g pm2
-          echo "node @ $(command -v node) -> $(node -v)"
-          echo "npm  @ $(command -v npm)  -> $(npm -v)"
-          echo "pm2  @ $(command -v pm2)  -> $(pm2 -v)"
+          node -v && npm -v
 
-      # 4.1) FIX: pastikan /usr/local/bin/node valid & executable (pm2 default kesana)
-      - name: Force /usr/local/bin/node to point to /usr/bin/node
+      # 5) Install pm2 untuk user 'dev' (bukan global root)
+      - name: Install pm2 for user dev (isolated npm prefix)
         shell: bash
         run: |
           set -e
-          # Hapus node bermasalah bila ada, lalu buat symlink ke /usr/bin/node
-          if [ -e /usr/local/bin/node ] || [ -L /usr/local/bin/node ]; then
-            sudo rm -f /usr/local/bin/node
-          fi
-          sudo ln -s /usr/bin/node /usr/local/bin/node
-          sudo chmod a+rx /usr/local/bin/node
-          ls -l /usr/bin/node || true
-          ls -l /usr/local/bin/node || true
+          sudo -u dev -H bash -lc '
+            mkdir -p "$HOME/.npm-global"
+            npm config set prefix "$HOME/.npm-global"
+            echo "export PATH=\$HOME/.npm-global/bin:\$PATH" >> "$HOME/.bashrc"
+            export PATH="$HOME/.npm-global/bin:$PATH"
+            npm i -g pm2
+            which pm2 && pm2 -v
+          '
 
-      # 5) Sample app + jalankan via pm2 sebagai user dev
-      - name: Create sample Node app and run with pm2
+      # 6) Sample app + jalankan via pm2 sebagai user dev
+      - name: Create sample Node app and run with pm2 (as dev)
         shell: bash
         run: |
           set -e
-          # siapkan home & tulis file
           sudo install -d -m 755 -o dev -g dev /home/dev
           sudo tee /home/dev/server.js > /dev/null <<'JS'
           const http = require('http');
@@ -90,16 +86,16 @@ jobs:
           JS
           sudo chown dev:dev /home/dev/server.js
 
-          # Jalankan pm2 SEBAGAI user dev; pastikan environment PATH bersih
+          # Jalankan sebagai dev, pakai pm2 milik dev (PATH dari .npm-global)
           sudo -u dev -H bash -lc '
-            export PATH=/usr/bin:/bin:/usr/local/bin
-            which node; node -v
-            which pm2; pm2 -v
+            export PATH="$HOME/.npm-global/bin:$PATH"
+            which node && node -v
+            which pm2 && pm2 -v
             pm2 start /home/dev/server.js --name demo
             pm2 save
           '
 
-      # 6) Info koneksi
+      # 7) Info koneksi
       - name: Show SSH / HTTP info
         shell: bash
         run: |
@@ -114,7 +110,7 @@ jobs:
           echo "Tes HTTP sample app:"
           echo "curl http://${TS_IP}:3000"
 
-      # 7) Keep alive biar sempat dipakai
+      # 8) Keep alive
       - name: Keep session alive
         shell: bash
         run: |
