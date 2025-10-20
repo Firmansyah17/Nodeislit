@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Buat user 'dev' + password acak (aman, tanpa broken pipe)
+      # 1) Buat user 'dev' + password acak (tanpa broken pipe)
       - name: Create user 'dev' with random password
         shell: bash
         run: |
@@ -35,7 +35,7 @@ jobs:
           sudo systemctl enable ssh
           sudo systemctl restart ssh
 
-      # 3) Tailscale
+      # 3) Tailscale join (pakai auth key dari repo secret)
       - name: Install Tailscale & connect
         shell: bash
         run: |
@@ -56,11 +56,15 @@ jobs:
           sudo npm i -g pm2
           node -v && npm -v && pm2 -v
 
-      # 5) (Opsional) contoh app Node agar bisa langsung dites
+      # 5) Sample app (izin file FIX) + jalan via pm2 sebagai user dev
       - name: Create sample Node app and run with pm2
         shell: bash
         run: |
-          cat > /home/dev/server.js <<'JS'
+          set -e
+          # pastikan home & izin
+          sudo install -d -m 755 -o dev -g dev /home/dev
+          # tulis file dengan sudo tee agar tidak permission denied
+          sudo tee /home/dev/server.js > /dev/null <<'JS'
           const http = require('http');
           const port = process.env.PORT || 3000;
           const server = http.createServer((req,res)=>{
@@ -69,11 +73,11 @@ jobs:
           });
           server.listen(port, ()=> console.log('listening on', port));
           JS
-          sudo chown -R dev:dev /home/dev
-          sudo -u dev pm2 start /home/dev/server.js --name demo
-          sudo -u dev pm2 save
+          sudo chown dev:dev /home/dev/server.js
+          # jalankan pm2 sbg user dev (pakai login shell biar PATH rapi)
+          sudo -u dev -H bash -lc 'pm2 start /home/dev/server.js --name demo && pm2 save'
 
-      # 6) Tampilkan info koneksi
+      # 6) Info koneksi
       - name: Show SSH / HTTP info
         shell: bash
         run: |
@@ -88,7 +92,7 @@ jobs:
           echo "Tes HTTP sample app:"
           echo "curl http://${TS_IP}:3000"
 
-      # 7) Keep alive
+      # 7) Keep alive biar sempat dipakai (default 180 menit)
       - name: Keep session alive
         shell: bash
         run: |
