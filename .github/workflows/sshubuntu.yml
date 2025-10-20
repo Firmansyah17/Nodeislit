@@ -56,14 +56,27 @@ jobs:
           sudo npm i -g pm2
           node -v && npm -v && pm2 -v
 
-      # 5) Sample app (izin file FIX) + jalan via pm2 sebagai user dev
+      # 4.1) (Fix) Pastikan pm2 pakai /usr/bin/node dan bereskan izin /usr/local/bin/node jika ada
+      - name: Patch Node path/permissions for pm2
+        shell: bash
+        run: |
+          set -e
+          echo "Node detected at: $(command -v node)"
+          ls -l /usr/bin/node || true
+          ls -l /usr/local/bin/node || true
+          # Jika /usr/local/bin/node ada tapi tak executable, betulkan izinnya
+          if [ -e /usr/local/bin/node ]; then
+            sudo chmod a+rx /usr/local/bin/node || true
+          fi
+          # Simpan path node yang benar (NodeSource) ke env
+          echo "NODE_BIN=/usr/bin/node" >> $GITHUB_ENV
+
+      # 5) Sample app (izin file FIX) + jalankan via pm2 sebagai user dev
       - name: Create sample Node app and run with pm2
         shell: bash
         run: |
           set -e
-          # pastikan home & izin
           sudo install -d -m 755 -o dev -g dev /home/dev
-          # tulis file dengan sudo tee agar tidak permission denied
           sudo tee /home/dev/server.js > /dev/null <<'JS'
           const http = require('http');
           const port = process.env.PORT || 3000;
@@ -74,8 +87,8 @@ jobs:
           server.listen(port, ()=> console.log('listening on', port));
           JS
           sudo chown dev:dev /home/dev/server.js
-          # jalankan pm2 sbg user dev (pakai login shell biar PATH rapi)
-          sudo -u dev -H bash -lc 'pm2 start /home/dev/server.js --name demo && pm2 save'
+          # Jalankan pm2 sebagai user dev, PAKSA pakai interpreter /usr/bin/node
+          sudo -u dev -H bash -lc "which pm2; which node; pm2 start /home/dev/server.js --name demo --interpreter ${NODE_BIN}; pm2 save"
 
       # 6) Info koneksi
       - name: Show SSH / HTTP info
