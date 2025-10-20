@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Buat user 'dev' + password acak (tanpa broken pipe)
+      # 1) Buat user 'dev' + password acak
       - name: Create user 'dev' with random password
         shell: bash
         run: |
@@ -35,7 +35,7 @@ jobs:
           sudo systemctl enable ssh
           sudo systemctl restart ssh
 
-      # 3) Tailscale join (pakai auth key dari repo secret)
+      # 3) Tailscale join
       - name: Install Tailscale & connect
         shell: bash
         run: |
@@ -46,7 +46,7 @@ jobs:
           TS_IPv4=$(tailscale ip -4 | head -n1)
           echo "TS_IP=${TS_IPv4}" >> $GITHUB_ENV
 
-      # 4) Node.js LTS + pm2
+      # 4) Node.js LTS + pm2 (global)
       - name: Install Node.js LTS + pm2
         shell: bash
         run: |
@@ -54,28 +54,30 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
           sudo apt-get install -y nodejs
           sudo npm i -g pm2
-          node -v && npm -v && pm2 -v
+          echo "node @ $(command -v node) -> $(node -v)"
+          echo "npm  @ $(command -v npm)  -> $(npm -v)"
+          echo "pm2  @ $(command -v pm2)  -> $(pm2 -v)"
 
-      # 4.1) (Fix) Pastikan pm2 pakai /usr/bin/node dan bereskan izin /usr/local/bin/node jika ada
-      - name: Patch Node path/permissions for pm2
+      # 4.1) FIX: pastikan /usr/local/bin/node valid & executable (pm2 default kesana)
+      - name: Force /usr/local/bin/node to point to /usr/bin/node
         shell: bash
         run: |
           set -e
-          echo "Node detected at: $(command -v node)"
+          # Hapus node bermasalah bila ada, lalu buat symlink ke /usr/bin/node
+          if [ -e /usr/local/bin/node ] || [ -L /usr/local/bin/node ]; then
+            sudo rm -f /usr/local/bin/node
+          fi
+          sudo ln -s /usr/bin/node /usr/local/bin/node
+          sudo chmod a+rx /usr/local/bin/node
           ls -l /usr/bin/node || true
           ls -l /usr/local/bin/node || true
-          # Jika /usr/local/bin/node ada tapi tak executable, betulkan izinnya
-          if [ -e /usr/local/bin/node ]; then
-            sudo chmod a+rx /usr/local/bin/node || true
-          fi
-          # Simpan path node yang benar (NodeSource) ke env
-          echo "NODE_BIN=/usr/bin/node" >> $GITHUB_ENV
 
-      # 5) Sample app (izin file FIX) + jalankan via pm2 sebagai user dev
+      # 5) Sample app + jalankan via pm2 sebagai user dev
       - name: Create sample Node app and run with pm2
         shell: bash
         run: |
           set -e
+          # siapkan home & tulis file
           sudo install -d -m 755 -o dev -g dev /home/dev
           sudo tee /home/dev/server.js > /dev/null <<'JS'
           const http = require('http');
@@ -87,8 +89,15 @@ jobs:
           server.listen(port, ()=> console.log('listening on', port));
           JS
           sudo chown dev:dev /home/dev/server.js
-          # Jalankan pm2 sebagai user dev, PAKSA pakai interpreter /usr/bin/node
-          sudo -u dev -H bash -lc "which pm2; which node; pm2 start /home/dev/server.js --name demo --interpreter ${NODE_BIN}; pm2 save"
+
+          # Jalankan pm2 SEBAGAI user dev; pastikan environment PATH bersih
+          sudo -u dev -H bash -lc '
+            export PATH=/usr/bin:/bin:/usr/local/bin
+            which node; node -v
+            which pm2; pm2 -v
+            pm2 start /home/dev/server.js --name demo
+            pm2 save
+          '
 
       # 6) Info koneksi
       - name: Show SSH / HTTP info
@@ -105,7 +114,7 @@ jobs:
           echo "Tes HTTP sample app:"
           echo "curl http://${TS_IP}:3000"
 
-      # 7) Keep alive biar sempat dipakai (default 180 menit)
+      # 7) Keep alive biar sempat dipakai
       - name: Keep session alive
         shell: bash
         run: |
